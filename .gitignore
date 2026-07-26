@@ -3,6 +3,15 @@
 !.gitignore
 !README.md
 !CHANGELOG.md
+!AGENTS.md
+!CONTEXT.md
+
+# Agent skill config + domain docs
+!docs/
+!docs/agents/
+!docs/agents/*.md
+!docs/adr/
+!docs/adr/*.md
 
 !agent/
 agent/*
