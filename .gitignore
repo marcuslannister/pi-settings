@@ -1,0 +1,9 @@
+# Allowlist: ignore everything, then re-include tracked config only.
+*
+!.gitignore
+!README.md
+
+!agent/
+agent/*
+!agent/settings.json
+!agent/models-store.json
