@@ -17,3 +17,5 @@
 agent/*
 !agent/settings.json
 !agent/models-store.json
+!agent/extensions/
+!agent/extensions/*
