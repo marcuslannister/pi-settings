@@ -1,7 +1,7 @@
 {
   "lastChangelogVersion": "0.82.1",
   "theme": "light",
-  "defaultProvider": "anthropic",
-  "defaultModel": "claude-opus-5",
-  "defaultThinkingLevel": "medium"
+  "defaultProvider": "openrouter",
+  "defaultModel": "deepseek/deepseek-v4-pro",
+  "defaultThinkingLevel": "high"
 }
