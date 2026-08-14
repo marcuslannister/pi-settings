@@ -5,6 +5,7 @@
   "defaultModel": "grok-4.6",
   "defaultThinkingLevel": "high",
   "packages": [
-    "npm:@narumitw/pi-statusline"
+    "npm:@narumitw/pi-statusline",
+    "npm:pi-mcp-adapter"
   ]
 }
