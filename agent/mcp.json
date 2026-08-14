@@ -1,0 +1,16 @@
+{
+  "mcpServers": {
+    "anvil": {
+      "command": "anvil-stdio.sh",
+      "args": [
+        "--server-id=anvil",
+        "--init-function=anvil-enable",
+        "--stop-function=anvil-disable"
+      ]
+    },
+    "emacs-eval": {
+      "command": "anvil-stdio.sh",
+      "args": ["--server-id=emacs-eval"]
+    }
+  }
+}
