@@ -1,7 +1,10 @@
 {
-  "lastChangelogVersion": "0.82.1",
+  "lastChangelogVersion": "0.84.1",
   "theme": "light",
-  "defaultProvider": "openrouter",
-  "defaultModel": "deepseek/deepseek-v4-pro",
-  "defaultThinkingLevel": "high"
+  "defaultProvider": "xai",
+  "defaultModel": "grok-4.6",
+  "defaultThinkingLevel": "high",
+  "packages": [
+    "npm:@narumitw/pi-statusline"
+  ]
 }
