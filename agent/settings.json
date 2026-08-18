@@ -6,6 +6,7 @@
   "defaultThinkingLevel": "high",
   "packages": [
     "npm:@narumitw/pi-statusline",
-    "npm:pi-mcp-adapter"
+    "npm:pi-mcp-adapter",
+    "git:github.com/DietrichGebert/ponytail"
   ]
 }
