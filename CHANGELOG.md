@@ -2,6 +2,7 @@
 
 ## Unreleased
 
+- Add the Muxy lifecycle-notification extension for Pi.
 - Add the Ponytail package to Pi agent packages.
 - Track `agent/mcp.json` (anvil + emacs-eval) and `agent/pi-statusline.json`.
 - Add `npm:pi-mcp-adapter` to agent packages.
