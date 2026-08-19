@@ -16,7 +16,6 @@
 !agent/
 agent/*
 !agent/settings.json
-!agent/models-store.json
 !agent/mcp.json
 !agent/pi-statusline.json
 !agent/extensions/
