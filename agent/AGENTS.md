@@ -1,0 +1,1 @@
+../../agent-scripts/AGENTS.MD
