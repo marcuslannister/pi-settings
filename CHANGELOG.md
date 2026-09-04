@@ -2,6 +2,7 @@
 
 ## Unreleased
 
+- Add `claude-hooks-guard` extension plus `agent/hooks/` (standalone copies of the Claude Code PreToolUse guard scripts: git-destructive, env-dump, gh --json, modern-CLI, Anvil redirect) so Pi enforces the same AGENTS.MD rules as Claude Code.
 - Stop tracking `agent/models-store.json`.
 - Add the Muxy lifecycle-notification extension for Pi.
 - Add the Ponytail package to Pi agent packages.
