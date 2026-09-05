@@ -1,14 +1,15 @@
 // PreToolUse Bash/Read guards, ported from Claude Code's ~/.claude/hooks so
 // pi enforces the same AGENTS.MD rules (git-destructive, secrets, modern CLI,
 // gh --json, Anvil redirect). These are standalone copies maintained in this
-// repo (agent/hooks/) — not synced automatically, so a change on the Claude
-// Code side needs a manual re-copy here if it should apply to pi too.
+// repo (agent/extensions/claude-hooks-guard/) — not synced automatically, so a
+// change on the Claude Code side needs a manual re-copy here if it should
+// apply to pi too.
 import { execFileSync } from "node:child_process";
 import { fileURLToPath } from "node:url";
-import { dirname, join } from "node:path";
+import { dirname } from "node:path";
 import { isToolCallEventType } from "@earendil-works/pi-coding-agent";
 
-const HOOKS_DIR = join(dirname(fileURLToPath(import.meta.url)), "..", "hooks");
+const HOOKS_DIR = dirname(fileURLToPath(import.meta.url));
 
 // Exit 2 means "blocked"; stderr carries the reason (Claude Code PreToolUse convention).
 const DENY_SCRIPTS = ["block-git-destructive.sh", "block-env-dump.sh", "gh-json.sh"];
