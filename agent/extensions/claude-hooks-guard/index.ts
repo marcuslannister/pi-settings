@@ -1,10 +1,16 @@
 // PreToolUse Bash/Read guards. In-process — no bash spawn. Fail closed.
-import { execFileSync } from "node:child_process";
+import { existsSync, readFileSync } from "node:fs";
+import { createConnection } from "node:net";
 
 export type Decision = { blocked: boolean; reason?: string; rewriteCommand?: string };
+type Parsed = { segments: string[]; separators: string[] };
+type AnvilTool = "Bash" | "Read";
 
 const ALLOW: Decision = { blocked: false };
 const deny = (reason: string): Decision => ({ blocked: true, reason });
+const matches = (s: string, p: string) => new RegExp(p).test(s);
+const ASK_FIRST =
+  "This needs an explicit user request in the current task. Leave the work in the tree and report that it is ready.";
 
 let anvilOverride: boolean | undefined;
 let anvilCache: { value: boolean; at: number } | null = null;
@@ -13,21 +19,48 @@ export function setAnvilAvailable(value: boolean | undefined) {
   anvilOverride = value;
 }
 
-export function anvilAvailable(): boolean {
+function anvilAvailable(): boolean {
   if (anvilOverride !== undefined) return anvilOverride;
-  const now = Date.now();
-  if (anvilCache && now - anvilCache.at < 60_000) return anvilCache.value;
+  if (anvilCache && Date.now() - anvilCache.at < 60_000) return anvilCache.value;
+  return false;
+}
+
+function probeEmacsListening(): Promise<boolean> {
+  const home = process.env.HOME || process.env.USERPROFILE || "";
+  const file = [
+    process.env.XDG_RUNTIME_DIR && `${process.env.XDG_RUNTIME_DIR}/emacs/server`,
+    home && `${home}/.emacs.d/server/server`,
+  ].find((p): p is string => !!p && existsSync(p));
+  if (!file) return Promise.resolve(false);
+  let line = "";
   try {
-    execFileSync("emacsclient", ["--timeout=2", "-e", "t"], {
-      stdio: "ignore",
-      timeout: 2500,
-      windowsHide: true,
-    });
-    anvilCache = { value: true, at: now };
+    line = readFileSync(file, "utf8").split(/\n/, 1)[0] ?? "";
   } catch {
-    anvilCache = { value: false, at: now };
+    return Promise.resolve(false);
   }
-  return anvilCache.value;
+  const tcp = line.match(/^(\S+):(\d+)\s/);
+  return new Promise((resolve) => {
+    const sock = tcp ? createConnection({ host: tcp[1], port: +tcp[2] }) : createConnection(file);
+    const t = setTimeout(() => {
+      sock.destroy();
+      resolve(false);
+    }, 200);
+    sock.once("connect", () => {
+      clearTimeout(t);
+      sock.end();
+      resolve(true);
+    });
+    sock.once("error", () => {
+      clearTimeout(t);
+      resolve(false);
+    });
+  });
+}
+
+async function refreshAnvilCache() {
+  if (anvilOverride !== undefined) return;
+  if (anvilCache && Date.now() - anvilCache.at < 60_000) return;
+  anvilCache = { value: await probeEmacsListening(), at: Date.now() };
 }
 
 function unwrapShell(c: string): string {
@@ -74,23 +107,26 @@ function normalizeSegment(s: string): string {
   return rest ? `${cmd} ${rest}` : cmd;
 }
 
-export function readCommand(command: string): { segments: string[]; separators: string[] } {
+function readCommand(command: string): Parsed {
   const c = stripQuotes(unwrapShell(command));
   const segments: string[] = [];
   const separators: string[] = [];
   let seg = "";
   let separator = "";
+  const flush = () => {
+    if (seg.replace(/\s/g, "")) {
+      const n = normalizeSegment(seg);
+      if (n) {
+        segments.push(n);
+        separators.push(separator);
+      }
+    }
+    seg = "";
+  };
   for (let i = 0; i < c.length; i++) {
     const char = c[i];
     if (";&|()`\n".includes(char)) {
-      if (seg.replace(/\s/g, "")) {
-        const n = normalizeSegment(seg);
-        if (n) {
-          segments.push(n);
-          separators.push(separator);
-        }
-      }
-      seg = "";
+      flush();
       let operator = char;
       const next = c[i + 1];
       if ((char === "&" && next === "&") || (char === "|" && (next === "|" || next === "&"))) {
@@ -102,37 +138,18 @@ export function readCommand(command: string): { segments: string[]; separators: 
       seg += char;
     }
   }
-  if (seg.replace(/\s/g, "")) {
-    const n = normalizeSegment(seg);
-    if (n) {
-      segments.push(n);
-      separators.push(separator);
-    }
-  }
+  flush();
   return { segments, separators };
 }
 
-function gitArgs(seg: string): string | null {
-  const m = seg.match(/^git(?:\s+(?:-[cC]\s+\S+|-\S+))*\s+(.*)$/);
-  return m ? m[1] : null;
-}
+const gitArgs = (s: string) => s.match(/^git(?:\s+(?:-[cC]\s+\S+|-\S+))*\s+(.*)$/)?.[1] ?? null;
+const ghArgs = (s: string) => s.match(/^gh(?:\s+(?:-[Rr]\s+\S+|-\S+))*\s+(.*)$/)?.[1] ?? null;
 
-function ghArgs(seg: string): string | null {
-  const m = seg.match(/^gh(?:\s+(?:-[Rr]\s+\S+|-\S+))*\s+(.*)$/);
-  return m ? m[1] : null;
-}
-
-function arg(args: string, pattern: string): boolean {
-  return new RegExp(pattern).test(args);
-}
-
-const GIT_TAIL = "This needs an explicit user request in the current task. Leave the work in the tree and report that it is ready.";
-
-export function blockGitDestructive(command: string): Decision {
-  for (const seg of readCommand(command).segments) {
+export function blockGitDestructive(command: string, parsed: Parsed = readCommand(command)): Decision {
+  for (const seg of parsed.segments) {
     const args = gitArgs(seg);
     if (!args) continue;
-    if (arg(args, "^push\\b")) {
+    if (matches(args, "^push\\b")) {
       let force = false;
       for (const tok of args.replace(/^push\b/, "").trim().split(/\s+/).filter(Boolean)) {
         if (tok === "--force" || tok === "--force-with-lease" || tok.startsWith("--force-with-lease=")) force = true;
@@ -140,19 +157,19 @@ export function blockGitDestructive(command: string): Decision {
         else if (tok.startsWith("-") && tok.includes("f")) force = true;
         else if (tok.startsWith("+")) force = true;
       }
-      if (force) return deny("Blocked: `git push` with a force flag or a forced refspec (`+ref`) rewrites published history.\n" + GIT_TAIL);
+      if (force) return deny("Blocked: `git push` with a force flag or a forced refspec (`+ref`) rewrites published history.\n" + ASK_FIRST);
     }
-    if (arg(args, "^reset\\b.*--hard")) return deny("Blocked: `git reset --hard`.\n" + GIT_TAIL);
-    if (arg(args, "^restore\\b")) return deny("Blocked: `git restore`.\n" + GIT_TAIL);
-    if (arg(args, "^filter-(branch|repo)\\b")) return deny("Blocked: `git filter-branch`/`filter-repo` rewrites published history.\n" + GIT_TAIL);
-    if (arg(args, "^commit\\b.*--amend")) return deny("Blocked: `git commit --amend`. No amend unless asked.\n" + GIT_TAIL);
-    if (arg(args, "^worktree\\b")) return deny("Blocked: `git worktree`. No CLI worktree unless asked.\n" + GIT_TAIL);
-    if (arg(args, "^checkout\\b.*( -- |-f\\b|--force\\b)")) return deny("Blocked: `git checkout` with `--` or `--force` discards working-tree changes.\n" + GIT_TAIL);
-    if (arg(args, "^rebase\\b") && !arg(args, "^rebase\\b.*--(continue|abort|skip|quit|edit-todo)")) {
-      return deny("Blocked: `git rebase` can rewrite published history.\n" + GIT_TAIL);
+    if (matches(args, "^reset\\b.*--hard")) return deny("Blocked: `git reset --hard`.\n" + ASK_FIRST);
+    if (matches(args, "^restore\\b")) return deny("Blocked: `git restore`.\n" + ASK_FIRST);
+    if (matches(args, "^filter-(branch|repo)\\b")) return deny("Blocked: `git filter-branch`/`filter-repo` rewrites published history.\n" + ASK_FIRST);
+    if (matches(args, "^commit\\b.*--amend")) return deny("Blocked: `git commit --amend`. No amend unless asked.\n" + ASK_FIRST);
+    if (matches(args, "^worktree\\b")) return deny("Blocked: `git worktree`. No CLI worktree unless asked.\n" + ASK_FIRST);
+    if (matches(args, "^checkout\\b.*( -- |-f\\b|--force\\b)")) return deny("Blocked: `git checkout` with `--` or `--force` discards working-tree changes.\n" + ASK_FIRST);
+    if (matches(args, "^rebase\\b") && !matches(args, "^rebase\\b.*--(continue|abort|skip|quit|edit-todo)")) {
+      return deny("Blocked: `git rebase` can rewrite published history.\n" + ASK_FIRST);
     }
-    if (arg(args, "^clean\\b") && !arg(args, "^clean\\b.*(-n\\b|--dry-run)")) {
-      return deny("Blocked: `git clean`.\n" + GIT_TAIL);
+    if (matches(args, "^clean\\b") && !matches(args, "^clean\\b.*(-n\\b|--dry-run)")) {
+      return deny("Blocked: `git clean`.\n" + ASK_FIRST);
     }
   }
   return ALLOW;
@@ -160,8 +177,8 @@ export function blockGitDestructive(command: string): Decision {
 
 const SECRET_RE = /\$\{?[A-Za-z_]*(TOKEN|SECRET|PASSWD|PASSWORD|API_?KEY|CREDENTIAL)/;
 
-export function blockEnvDump(command: string): Decision {
-  for (const seg of readCommand(command).segments) {
+export function blockEnvDump(command: string, parsed: Parsed = readCommand(command)): Decision {
+  for (const seg of parsed.segments) {
     const sp = seg.search(/\s/);
     const cmd = sp === -1 ? seg : seg.slice(0, sp);
     const args = sp === -1 ? "" : seg.slice(sp + 1);
@@ -181,24 +198,24 @@ export function blockEnvDump(command: string): Decision {
   return ALLOW;
 }
 
-export function ghJson(command: string): Decision {
+export function ghJson(command: string, parsed: Parsed = readCommand(command)): Decision {
   const READ_SUB = "^(pr|issue|run|release|repo|workflow|cache|label|variable|secret) +(view|list|checks|status)\\b";
   const SEARCH = "^search +(prs|issues|repos|code|commits)\\b";
   const NO_JSON = "(^pr +diff\\b|--log\\b|--log-failed\\b)";
-  for (const seg of readCommand(command).segments) {
+  for (const seg of parsed.segments) {
     const args = ghArgs(seg);
     if (!args) continue;
-    if (arg(args, "^api\\b") && arg(args, "--paginate")) {
+    if (matches(args, "^api\\b") && matches(args, "--paginate")) {
       return deny("Blocked: `gh api --paginate` bypasses the shared cache and uses the real token.\nPage manually, or ask the user before you pull the full list.");
     }
-    if ((arg(args, READ_SUB) || arg(args, SEARCH)) && !arg(args, "--json") && !arg(args, NO_JSON)) {
+    if ((matches(args, READ_SUB) || matches(args, SEARCH)) && !matches(args, "--json") && !matches(args, NO_JSON)) {
       return deny(`Blocked: \`gh ${args.slice(0, 60)}\` reads without --json <fields>.\nHuman-format reads delegate to the real token instead of the shared cache. Add --json with the fields you need. \`gh pr diff\` and run logs are the exceptions.`);
     }
   }
   return ALLOW;
 }
 
-export function enforceModernCli(command: string): Decision {
+export function enforceModernCli(command: string, parsed: Parsed = readCommand(command)): Decision {
   if (!command) return ALLOW;
   const findRe = /^find\s+([^\s;|&]+)\s+-name\s+([^\s;|&]+)$/;
   const sedRe = /^sed\s+-i\s+'?s\/([^/\s]+)\/([^/\s]+)\/'?\s+([^\s;|&]+)$/;
@@ -207,19 +224,22 @@ export function enforceModernCli(command: string): Decision {
   m = command.match(sedRe);
   if (m) return { blocked: false, rewriteCommand: `sd '${m[1]}' '${m[2]}' ${m[3]}` };
 
-  const { segments, separators } = readCommand(command);
-  for (let i = 0; i < segments.length; i++) {
-    if (separators[i] === "|" || separators[i] === "|&") continue;
-    const first = segments[i].split(/\s+/)[0];
+  for (let i = 0; i < parsed.segments.length; i++) {
+    if (parsed.separators[i] === "|" || parsed.separators[i] === "|&") continue;
+    const first = parsed.segments[i].split(/\s+/)[0];
     if (first === "grep") return deny('Use rg instead of grep. Example: rg -n "pattern" path');
     if (first === "ls") return deny("Use eza instead of ls. Example: eza -la --git");
   }
   return ALLOW;
 }
 
-export function redirectToAnvil(tool: string, input: { command?: string; file_path?: string }): Decision {
+export function redirectToAnvil(
+  tool: AnvilTool,
+  input: { command?: string; file_path?: string },
+  parsed: Parsed = readCommand(input.command ?? ""),
+): Decision {
   if (tool === "Bash") {
-    for (const seg of readCommand(input.command ?? "").segments) {
+    for (const seg of parsed.segments) {
       const words = seg.split(/\s+/);
       const first = words[0];
       if (first === "git") {
@@ -255,7 +275,7 @@ export function redirectToAnvil(tool: string, input: { command?: string; file_pa
         }
       }
     }
-  } else if (tool === "Read") {
+  } else {
     const path = input.file_path ?? "";
     if (path.endsWith(".org")) {
       if (!anvilAvailable()) return ALLOW;
@@ -265,33 +285,34 @@ export function redirectToAnvil(tool: string, input: { command?: string; file_pa
   return ALLOW;
 }
 
-export function guardBash(command: string): Decision {
+function guardBash(command: string): Decision {
   let rewritten: string | undefined;
+  let parsed = readCommand(command);
   for (const g of [blockGitDestructive, blockEnvDump, ghJson, enforceModernCli]) {
-    const result = g(rewritten ?? command);
+    const result = g(rewritten ?? command, parsed);
     if (result.blocked) return result;
-    if (result.rewriteCommand) rewritten = result.rewriteCommand;
+    if (result.rewriteCommand) {
+      rewritten = result.rewriteCommand;
+      parsed = readCommand(rewritten);
+    }
   }
-  const result = redirectToAnvil("Bash", { command: rewritten ?? command });
+  const result = redirectToAnvil("Bash", { command: rewritten ?? command }, parsed);
   if (result.blocked) return result;
   if (rewritten) return { blocked: false, rewriteCommand: rewritten };
   return ALLOW;
 }
 
-export function guardRead(filePath: string): Decision {
-  return redirectToAnvil("Read", { file_path: filePath });
-}
-
 export default function (pi) {
   pi.on("tool_call", async (event) => {
     try {
+      await refreshAnvilCache();
       if (event.toolName === "bash") {
         const result = guardBash(event.input.command);
         if (result.blocked) return { block: true, reason: result.reason };
         if (result.rewriteCommand) event.input.command = result.rewriteCommand;
       }
       if (event.toolName === "read") {
-        const result = guardRead(event.input.path);
+        const result = redirectToAnvil("Read", { file_path: event.input.path });
         if (result.blocked) return { block: true, reason: result.reason };
       }
     } catch {
