@@ -1,5 +1,5 @@
 {
-  "lastChangelogVersion": "0.84.4",
+  "lastChangelogVersion": "0.85.1",
   "theme": "light",
   "defaultProvider": "openrouter",
   "defaultModel": "deepseek/deepseek-v4-flash-0731",
@@ -8,6 +8,7 @@
     "npm:@narumitw/pi-statusline",
     "npm:pi-mcp-adapter",
     "git:github.com/DietrichGebert/ponytail",
-    "npm:nowledge-mem-pi"
+    "npm:nowledge-mem-pi",
+    "npm:pi-web-search"
   ]
 }
