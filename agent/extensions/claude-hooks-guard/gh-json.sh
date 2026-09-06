@@ -1,4 +1,5 @@
 #!/bin/bash
+set -euo pipefail
 # Enforces the `gh` read rules (rules/github.md): every read passes --json, and
 # --paginate bypasses the shared cache. Each `gh` command is judged on its own,
 # so one --json cannot excuse a human-format read beside it.
@@ -17,17 +18,15 @@ for seg in "${SEGMENTS[@]}"; do
   arg() { grep -qE -- "$1" <<<"$args"; }
 
   if arg '^api\b' && arg '--paginate'; then
-    echo "Blocked: \`gh api --paginate\` bypasses the shared cache and uses the real token." >&2
-    echo "Page manually, or ask the user before you pull the full list." >&2
-    exit 2
+    guard_deny "Blocked: \`gh api --paginate\` bypasses the shared cache and uses the real token.
+Page manually, or ask the user before you pull the full list."
   fi
 
   if { arg "$READ_SUBCOMMAND_RE" || arg "$SEARCH_RE"; } \
     && ! arg '--json' && ! arg "$NO_JSON_FORM"; then
-    echo "Blocked: \`gh ${args:0:60}\` reads without --json <fields>." >&2
-    echo "Human-format reads delegate to the real token instead of the shared cache. Add --json with the fields you need. \`gh pr diff\` and run logs are the exceptions." >&2
-    exit 2
+    guard_deny "Blocked: \`gh ${args:0:60}\` reads without --json <fields>.
+Human-format reads delegate to the real token instead of the shared cache. Add --json with the fields you need. \`gh pr diff\` and run logs are the exceptions."
   fi
 done
 
-exit 0
+guard_allow
