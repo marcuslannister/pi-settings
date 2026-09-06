@@ -2,6 +2,7 @@
 
 ## Unreleased
 
+- Port the shell guards to in-process TypeScript so they run on Windows without spawning bash, and keep the self-check as a case table (`node test.ts`).
 - Standardize the Pi shell guards on JSON decisions, fail closed when a guard fails, share command parsing with separator data, and add a self-check.
 - Keep the pipe separator across subshell grouping, so `producer | (rg x)` is no longer blocked as a fresh command.
 - Move PreToolUse guard scripts into `agent/extensions/claude-hooks-guard/` and delete `agent/hooks/`, so pi does not warn about a deprecated global hooks directory.
