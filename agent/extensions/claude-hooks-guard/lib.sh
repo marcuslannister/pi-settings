@@ -1,11 +1,39 @@
 #!/bin/bash
 # Shared command parsing for the PreToolUse Bash hooks.
 #
-# read_command sets SEGMENTS: one normalised entry per command in the string.
-# Each entry starts at its command word, so a hook can anchor with ^.
+# read_command sets SEGMENTS and SEGMENT_SEPARATORS. Each normalised segment
+# starts at its command word. Its matching separator is the operator before it.
 #
 # The pipeline is: unwrap nested shells -> remove remaining quoted spans ->
 # split on the shell operators -> normalise each segment.
+
+# Constant payload, so the common case (every guard allowing) spawns no jq.
+guard_allow() {
+  echo '{"hookSpecificOutput":{"hookEventName":"PreToolUse","permissionDecision":"allow"}}'
+  exit 0
+}
+
+guard_deny() {
+  jq -n --arg reason "$1" '{
+    hookSpecificOutput: {
+      hookEventName: "PreToolUse",
+      permissionDecision: "deny",
+      permissionDecisionReason: $reason
+    }
+  }'
+  exit 0
+}
+
+guard_rewrite() {
+  jq -n --arg command "$1" '{
+    hookSpecificOutput: {
+      hookEventName: "PreToolUse",
+      permissionDecision: "allow",
+      updatedInput: {command: $command}
+    }
+  }'
+  exit 0
+}
 
 # Replaces the quoted payload of `bash -c '...'` with a separate segment, so the
 # payload is inspected as commands instead of being discarded as a string.
@@ -90,11 +118,45 @@ anvil_available() {
 }
 
 read_command() {
-  local c seg
+  local c seg="" separator="" operator char next i
   c=$(strip_quotes "$(unwrap_shell "$(jq -r '.tool_input.command // empty' <<<"$1")")")
   SEGMENTS=()
-  while IFS= read -r seg; do
+  SEGMENT_SEPARATORS=()
+
+  for ((i = 0; i < ${#c}; i++)); do
+    char=${c:i:1}
+    case $char in
+      ';'|'&'|'|'|'('|')'|'`'|$'\n')
+        if [[ -n ${seg//[[:space:]]/} ]]; then
+          seg=$(normalize_segment "$seg")
+          if [[ -n $seg ]]; then
+            SEGMENTS+=("$seg")
+            SEGMENT_SEPARATORS+=("$separator")
+          fi
+        fi
+        seg=""
+        operator=$char
+        next=${c:i+1:1}
+        if [[ $char == '&' && $next == '&' ]] \
+          || [[ $char == '|' && ( $next == '|' || $next == '&' ) ]]; then
+          operator+=$next
+          i=$((i + 1))
+        fi
+        # `(` and `)` group commands, they do not separate them. A subshell
+        # around a pipeline stage (`producer | (rg x)`) must keep the pipe as
+        # the separator, or the downstream-pipeline exemption never applies.
+        [[ $char == '(' || $char == ')' ]] || separator=$operator
+        ;;
+      *) seg+=$char ;;
+    esac
+  done
+
+  if [[ -n ${seg//[[:space:]]/} ]]; then
     seg=$(normalize_segment "$seg")
-    [ -n "$seg" ] && SEGMENTS+=("$seg")
-  done < <(printf '%s\n' "$c" | tr ';&|()`' '\n\n\n\n\n\n')
+    if [[ -n $seg ]]; then
+      SEGMENTS+=("$seg")
+      SEGMENT_SEPARATORS+=("$separator")
+    fi
+  fi
+  return 0
 }

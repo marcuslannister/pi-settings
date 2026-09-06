@@ -1,4 +1,5 @@
 #!/bin/bash
+set -euo pipefail
 # Blocks environment dumps and printed secret values (AGENTS.MD: secrets).
 # The test is whether the command names a target. `printenv NAME` and
 # `declare -p NAME` are lookups; `env`, `env -0`, and `declare -x` are dumps.
@@ -8,9 +9,8 @@ read_command "$(cat)"
 SECRET_RE='\$\{?[A-Za-z_]*(TOKEN|SECRET|PASSWD|PASSWORD|API_?KEY|CREDENTIAL)'
 
 deny() {
-  echo "Blocked: $1" >&2
-  echo "$2" >&2
-  exit 2
+  guard_deny "Blocked: $1
+$2"
 }
 
 for seg in "${SEGMENTS[@]}"; do
@@ -33,4 +33,4 @@ for seg in "${SEGMENTS[@]}"; do
     "Query the exact variable name only, for example \`printenv MY_VAR\`, and redact the value."
 done
 
-exit 0
+guard_allow

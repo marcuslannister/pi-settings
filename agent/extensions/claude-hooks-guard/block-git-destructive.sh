@@ -1,4 +1,5 @@
 #!/bin/bash
+set -euo pipefail
 # Blocks Git operations that need an explicit user request (AGENTS.MD: push and
 # destructive operations). Each command in the string is judged on its own, so
 # an exempt command cannot excuse a destructive one beside it.
@@ -6,9 +7,8 @@ source "$(dirname "$0")/lib.sh"
 read_command "$(cat)"
 
 deny() {
-  echo "Blocked: $1" >&2
-  echo "This needs an explicit user request in the current task. Leave the work in the tree and report that it is ready." >&2
-  exit 2
+  guard_deny "Blocked: $1
+This needs an explicit user request in the current task. Leave the work in the tree and report that it is ready."
 }
 
 for seg in "${SEGMENTS[@]}"; do
@@ -55,4 +55,4 @@ for seg in "${SEGMENTS[@]}"; do
     && deny "\`git clean\`."
 done
 
-exit 0
+guard_allow
