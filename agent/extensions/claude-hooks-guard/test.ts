@@ -1,5 +1,5 @@
 // Self-check: same fixtures as the old test-hooks.sh. `node test.ts`
-import {
+import install, {
   blockEnvDump,
   blockGitDestructive,
   enforceModernCli,
@@ -40,7 +40,7 @@ function rewrite(expected: string, command: string) {
   }
 }
 
-function redirect(expected: "allow" | "deny", tool: string, input: { command?: string; file_path?: string }) {
+function redirect(expected: "allow" | "deny", tool: "Bash" | "Read", input: { command?: string; file_path?: string }) {
   const actual = verdict(redirectToAnvil(tool, input));
   if (actual !== expected) {
     console.log(`FAIL redirect-to-anvil: expected ${expected}, got ${actual} for: ${tool} ${JSON.stringify(input)}`);
@@ -191,6 +191,17 @@ redirect("allow", "Bash", { command: "echo ok; sed -i s/a/b/ f.txt" });
 redirect("allow", "Bash", { command: "FOO=1 sed -i s/a/b/ f.txt" });
 redirect("allow", "Bash", { command: "/usr/bin/sed -i s/a/b/ f.txt" });
 setAnvilAvailable(undefined);
+
+let handler: (event: unknown) => Promise<{ block?: boolean } | void>;
+install({ on(_n: string, fn: typeof handler) { handler = fn; } });
+const closed = await handler({
+  toolName: "bash",
+  input: { get command() { throw new Error("boom"); } },
+});
+if (!closed?.block) {
+  console.log("FAIL fail-closed: expected block on throw");
+  fail++;
+}
 
 if (fail === 0) console.log("all hook checks passed");
 else process.exit(1);
