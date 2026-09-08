@@ -2,6 +2,7 @@
 
 ## Unreleased
 
+- Track `agent/keybindings.json` and bind image paste to Ctrl+Shift+V (Kitty) plus Alt+V (Windows/WSL).
 - Remove the Muxy, Orca, otty, and tty7 agent extensions.
 - Enable `showHardwareCursor` in agent settings.
 - Add `npm:pi-web-search` to agent packages.

@@ -18,6 +18,7 @@ agent/*
 !agent/settings.json
 !agent/mcp.json
 !agent/pi-statusline.json
+!agent/keybindings.json
 !agent/AGENTS.md
 !agent/extensions/
 !agent/extensions/*
