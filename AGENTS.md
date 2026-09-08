@@ -1,7 +1,7 @@
 # pi-settings
 
 Tracked config for the `pi` agent (`~/.pi`). Versioned: `agent/settings.json`,
-`agent/mcp.json`, `agent/pi-statusline.json`, and `agent/extensions/`.
+`agent/mcp.json`, `agent/pi-statusline.json`, `agent/keybindings.json`, and `agent/extensions/`.
 `auth.json`, `models-store.json`, `mcp-cache.json`, and session logs are ignored.
 
 ## Agent skills
