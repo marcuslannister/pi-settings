@@ -10,5 +10,6 @@
     "git:github.com/DietrichGebert/ponytail",
     "npm:nowledge-mem-pi",
     "npm:pi-web-search"
-  ]
+  ],
+  "showHardwareCursor": true
 }
