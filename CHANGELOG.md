@@ -2,6 +2,7 @@
 
 ## Unreleased
 
+- Remove the Muxy, Orca, otty, and tty7 agent extensions.
 - Enable `showHardwareCursor` in agent settings.
 - Add `npm:pi-web-search` to agent packages.
 - Port the shell guards to in-process TypeScript so they run on Windows without spawning bash, and keep the self-check as a case table (`node test.ts`).
