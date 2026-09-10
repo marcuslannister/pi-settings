@@ -11,5 +11,5 @@
     "npm:nowledge-mem-pi",
     "npm:pi-web-search"
   ],
-  "showHardwareCursor": true
+  "showHardwareCursor": false
 }
