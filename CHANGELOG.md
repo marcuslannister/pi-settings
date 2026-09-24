@@ -2,6 +2,7 @@
 
 ## Unreleased
 
+- Add Pi hooks for Orca agent status, startup prefill, and titlebar spinner.
 - Track `agent/keybindings.json` and bind image paste to Ctrl+Shift+V (Kitty) plus Alt+V (Windows/WSL).
 - Remove the Muxy, Orca, otty, and tty7 agent extensions.
 - Disable `showHardwareCursor` in agent settings.
