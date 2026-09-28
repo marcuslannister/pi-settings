@@ -2,6 +2,7 @@
 
 ## Unreleased
 
+- Finish a stuck Orca agent status turn when a subagent process exits without a completion event.
 - Add Pi hooks for Orca agent status, startup prefill, and titlebar spinner.
 - Recognize Windows paths as absolute in the Herdr session status extension.
 - Track `agent/keybindings.json` and bind image paste to Ctrl+Shift+V (Kitty) plus Alt+V (Windows/WSL).
