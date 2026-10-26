@@ -2,6 +2,7 @@
 
 ## Unreleased
 
+- Stop tracking `agent/keybindings.json`, so image paste follows Pi's default (`ctrl+v`, or `alt+v` on Windows and WSL).
 - Keep Orca agent status across session switches and extension reloads, and publish the visible subagent roster.
 - Disable the built-in MCP extension and stop tracking `agent/mcp.json`.
 - Finish a stuck Orca agent status turn when a subagent process exits without a completion event.
