@@ -22,3 +22,8 @@ agent/*
 !agent/extensions/*
 !agent/extensions/claude-hooks-guard/
 !agent/extensions/claude-hooks-guard/*
+
+# CI
+!.github/
+!.github/workflows/
+!.github/workflows/*.yml
