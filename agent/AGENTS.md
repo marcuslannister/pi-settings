@@ -1,1 +1,1 @@
-../../agent-scripts/AGENTS.MD
+../../home/AGENTS.md
