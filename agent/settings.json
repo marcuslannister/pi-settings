@@ -4,6 +4,13 @@
   "defaultProvider": "openrouter",
   "defaultModel": "deepseek/deepseek-v4-flash-0731",
   "defaultThinkingLevel": "high",
+  "compaction": {
+    "modelOverrides": {
+      "openrouter/deepseek/deepseek-v4-flash-0731": {
+        "reserveTokens": 367002
+      }
+    }
+  },
   "packages": [
     "npm:@narumitw/pi-statusline",
     "npm:pi-mcp-adapter",
