@@ -3,6 +3,7 @@
 ## Unreleased
 
 - Point `agent/AGENTS.md` at `AGENTS.codex.md` in the `home` repo (`~/Projects/home`), because Pi does not expand the `@` imports in `AGENTS.md`.
+- Start compaction at 65% of the context window for the default model: `compaction.modelOverrides` sets `reserveTokens` to 367002 (35% of 1048576), because Pi has no percentage key.
 
 - Stop tracking `agent/keybindings.json`, so image paste follows Pi's default (`ctrl+v`, or `alt+v` on Windows and WSL).
 - Keep Orca agent status across session switches and extension reloads, and publish the visible subagent roster.
