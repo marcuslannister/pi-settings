@@ -22,6 +22,8 @@ agent/*
 !agent/extensions/*
 !agent/extensions/claude-hooks-guard/
 !agent/extensions/claude-hooks-guard/*
+!agent/extensions/context-handoff/
+!agent/extensions/context-handoff/*
 
 # CI
 !.github/

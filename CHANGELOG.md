@@ -2,6 +2,7 @@
 
 ## Unreleased
 
+- Add the `context-handoff` extension: in a herdr pane (`HERDR_ENV=1`), Pi warns the agent once per session when context fill reaches 36/65 of its compaction point (`HANDOFF_PCT` overrides), so the agent hands off to a new tab before auto compact. Self-check: `node agent/extensions/context-handoff/test.ts`.
 - Point `agent/AGENTS.md` at `AGENTS.codex.md` in the `home` repo (`~/Projects/home`), because Pi does not expand the `@` imports in `AGENTS.md`.
 - Start compaction at 65% of the context window for the default model: `compaction.modelOverrides` sets `reserveTokens` to 367002 (35% of 1048576), because Pi has no percentage key.
 
