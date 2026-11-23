@@ -21,8 +21,10 @@ export function warning(
     compaction?.reserveTokens ??
     DEFAULT_RESERVE;
   const pct = Number(handoffPct);
+  // Pi rejects a reserve that is not a non-negative safe integer; then there is no valid default threshold.
+  if (!(pct > 0) && !(Number.isSafeInteger(reserve) && reserve >= 0)) return;
   const limit = pct > 0 ? (usage.contextWindow * pct) / 100 : (usage.contextWindow - reserve) * RATIO;
-  if (usage.tokens < limit) return;
+  if (!(Number.isFinite(limit) && limit > 0) || usage.tokens < limit) return;
   const fill = Math.round((usage.tokens / usage.contextWindow) * 100);
   const threshold = Math.round((limit / usage.contextWindow) * 100);
   return `Context fill is ${fill}% (handoff threshold ${threshold}%). Read ${join(homedir(), "Projects/agent-scripts/global/rules/handoff.md")} and hand off now.`;

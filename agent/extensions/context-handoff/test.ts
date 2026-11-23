@@ -29,6 +29,18 @@ check("HANDOFF_PCT fires", /threshold 10%/.test(warning({ tokens: 10, contextWin
 check("HANDOFF_PCT holds", warning({ tokens: 9, contextWindow: 100 }, undefined, M, "10") === undefined);
 check("HANDOFF_PCT bad value", warning({ tokens: 9, contextWindow: 200000 }, undefined, M, "abc") === undefined);
 
+// A reserve Pi rejects (string, negative) or a threshold that is not finite and positive (reserve above the window): nothing.
+// An explicit HANDOFF_PCT does not use the reserve, so it still fires.
+const big = { tokens: 150000, contextWindow: 200000 };
+check(
+  "invalid reserve",
+  warning(big, { reserveTokens: "bad" }, M, undefined) === undefined &&
+    warning(big, { reserveTokens: -1000 }, M, undefined) === undefined &&
+    warning(big, { reserveTokens: 300000 }, M, undefined) === undefined &&
+    warning(big, { modelOverrides: { "p/m": { reserveTokens: "bad" } } }, M, undefined) === undefined &&
+    warning(big, { reserveTokens: "bad" }, M, "10") !== undefined,
+);
+
 // Unknown fill (right after compaction) or no window: nothing.
 check("tokens null", warning({ tokens: null, contextWindow: 100 }, undefined, M, "1") === undefined);
 check("no usage", warning(undefined, undefined, M, "1") === undefined);
