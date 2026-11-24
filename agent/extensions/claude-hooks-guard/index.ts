@@ -1,24 +1,15 @@
-// PreToolUse Bash/Read guards. In-process — no bash spawn. Fail closed.
-import { accessSync, constants, existsSync, readFileSync, statSync } from "node:fs";
-import { createConnection } from "node:net";
+// PreToolUse guards for the `bash` and `powershell` tools. In-process — no bash spawn. Fail closed.
+import { accessSync, constants, statSync } from "node:fs";
 import { delimiter, join } from "node:path";
 
 export type Decision = { blocked: boolean; reason?: string; rewriteCommand?: string };
 type Parsed = { segments: string[]; separators: string[] };
-type AnvilTool = "Bash" | "Read";
 
 const ALLOW: Decision = { blocked: false };
 const deny = (reason: string): Decision => ({ blocked: true, reason });
 const matches = (s: string, p: string) => new RegExp(p).test(s);
 const ASK_FIRST =
   "This needs an explicit user request in the current task. Leave the work in the tree and report that it is ready.";
-
-let anvilOverride: boolean | undefined;
-let anvilCache: { value: boolean; at: number } | null = null;
-
-export function setAnvilAvailable(value: boolean | undefined) {
-  anvilOverride = value;
-}
 
 let toolsOverride: Set<string> | undefined;
 const toolCache = new Map<string, boolean>();
@@ -49,56 +40,14 @@ function have(tool: string): boolean {
   return found;
 }
 
-function anvilAvailable(): boolean {
-  if (anvilOverride !== undefined) return anvilOverride;
-  if (anvilCache && Date.now() - anvilCache.at < 60_000) return anvilCache.value;
-  return false;
-}
-
-function probeEmacsListening(): Promise<boolean> {
-  const home = process.env.HOME || process.env.USERPROFILE || "";
-  const file = [
-    process.env.XDG_RUNTIME_DIR && `${process.env.XDG_RUNTIME_DIR}/emacs/server`,
-    home && `${home}/.emacs.d/server/server`,
-  ].find((p): p is string => !!p && existsSync(p));
-  if (!file) return Promise.resolve(false);
-  let line = "";
-  try {
-    line = readFileSync(file, "utf8").split(/\n/, 1)[0] ?? "";
-  } catch {
-    return Promise.resolve(false);
-  }
-  const tcp = line.match(/^(\S+):(\d+)\s/);
-  return new Promise((resolve) => {
-    const sock = tcp ? createConnection({ host: tcp[1], port: +tcp[2] }) : createConnection(file);
-    const t = setTimeout(() => {
-      sock.destroy();
-      resolve(false);
-    }, 200);
-    sock.once("connect", () => {
-      clearTimeout(t);
-      sock.end();
-      resolve(true);
-    });
-    sock.once("error", () => {
-      clearTimeout(t);
-      resolve(false);
-    });
-  });
-}
-
-async function refreshAnvilCache() {
-  if (anvilOverride !== undefined) return;
-  if (anvilCache && Date.now() - anvilCache.at < 60_000) return;
-  anvilCache = { value: await probeEmacsListening(), at: Date.now() };
-}
-
+// A shell wrapper (`bash -c '…'`, `"C:\…\pwsh.exe" -Command '…'`): the quoted payload becomes its own command.
+// The name matches without regard to case, with or without `.exe`, after a bare, unquoted, or quoted directory path.
 function unwrapShell(c: string): string {
-  const re = /(^|\s)([^\s]*[\\/])?((ba|z|k|da)?sh|pwsh|powershell)(?:\.exe)?((\s+-[A-Za-z]+)*)\s+("[^"]*"|'[^']*')/;
+  const re = /(^|\s)(?:"(?:[^"]*[\\/])?|'(?:[^']*[\\/])?|[^\s"']*[\\/])?((?:ba|z|k|da)?sh|pwsh|powershell)(?:\.exe)?["']?((?:\s+-[A-Za-z]+)*)\s+("[^"]*"|'[^']*')/i;
   for (;;) {
     const m = c.match(re);
     if (!m) break;
-    const quoted = m[7];
+    const quoted = m[4];
     const payload = quoted.slice(1, -1);
     c = c.replace(quoted, () => `; ${payload} ;`);
   }
@@ -112,29 +61,41 @@ function stripQuotes(c: string): string {
     if (!m) break;
     const span = m[0];
     let body = span.slice(1, -1);
-    if (!/^[A-Za-z0-9_.:/=@$%{}+-]+$/.test(body)) body = " ";
+    if (!/^[A-Za-z0-9_.:/=@$%{}+-]+$/.test(body)) {
+      // A quoted executable path in command position keeps its file name: `& "C:\…\git.exe" reset --hard` is still `git`.
+      const atCommand = /(^|[;&|(\n`!]|\b(?:if|then|elif|else|do|while|until|command|exec|nohup|time|env))\s*$/.test(c.slice(0, m.index));
+      body = atCommand && /[\\/][^\\/\s]+$/.test(body) ? body.replace(/^.*[\\/]/, "") : " ";
+    }
     c = c.replace(span, () => body);
   }
   return c;
 }
 
+const ASSIGNMENT = /^[A-Za-z_][A-Za-z0-9_]*=/;
+// The command name without its directory, `.exe`, or case: `C:\Git\usr\bin\ENV.EXE` is `env`.
+const commandName = (word: string) => word.replace(/^.*[\\/]/, "").replace(/\.exe$/i, "").toLowerCase();
+
 function normalizeSegment(s: string): string {
   let m: RegExpMatchArray | null;
-  while ((m = s.match(/^\s*(if|then|elif|else|do|while|until|!)\s+(.*)$/))) s = m[2];
-  while ((m = s.match(/^\s*[A-Za-z_][A-Za-z0-9_]*=\S*\s+(.*)$/))) s = m[1];
-  while ((m = s.match(/^\s*(command|builtin|exec|nohup|time|stdbuf|nice)(\s+-\S+)*\s+(.*)$/))) s = m[3];
-  if ((m = s.match(/^\s*env\s+(.*)$/))) {
-    let t = m[1];
-    while ((m = t.match(/^(-[iu]\s+\S+|--unset=\S+|-[a-zA-Z]+|[A-Za-z_][A-Za-z0-9_]*=\S*)\s+(.*)$/))) t = m[2];
-    if (t && !t.startsWith("-")) s = t;
+  // Name the command word first, then decide whether it wraps another command (`/usr/bin/env git …`, `Command git …`).
+  for (;;) {
+    s = s.replace(/^(\s*)(\S+)/, (all, space, word) => (ASSIGNMENT.test(word) ? all : space + commandName(word)));
+    if ((m = s.match(/^\s*(if|then|elif|else|do|while|until|!)\s+(.*)$/))) s = m[2];
+    else if ((m = s.match(/^\s*[A-Za-z_][A-Za-z0-9_]*=\S*\s+(.*)$/))) s = m[1];
+    else if ((m = s.match(/^\s*(command|builtin|exec|nohup|time|stdbuf|nice)(\s+-\S+)*\s+(.*)$/))) s = m[3];
+    else if ((m = s.match(/^\s*env\s+(.*)$/))) {
+      let t = m[1];
+      while ((m = t.match(/^(-[iu]\s+\S+|--unset=\S+|-[a-zA-Z]+|[A-Za-z_][A-Za-z0-9_]*=\S*)\s+(.*)$/))) t = m[2];
+      if (!t || t.startsWith("-")) break;
+      s = t;
+    } else break;
   }
   const trimmed = s.trim();
   if (!trimmed) return "";
   const sp = trimmed.search(/\s/);
   const first = sp === -1 ? trimmed : trimmed.slice(0, sp);
   const rest = sp === -1 ? "" : trimmed.slice(sp).trim();
-  const cmd = first.replace(/^.*[\\/]/, "").replace(/\.exe$/i, "");
-  return rest ? `${cmd} ${rest}` : cmd;
+  return rest ? `${first} ${rest}` : first;
 }
 
 function readCommand(command: string): Parsed {
@@ -263,62 +224,18 @@ export function enforceModernCli(command: string, parsed: Parsed = readCommand(c
   return ALLOW;
 }
 
-export function redirectToAnvil(
-  tool: AnvilTool,
-  input: { command?: string; file_path?: string },
-  parsed: Parsed = readCommand(input.command ?? ""),
-): Decision {
-  if (tool === "Bash") {
-    for (const seg of parsed.segments) {
-      const words = seg.split(/\s+/);
-      const first = words[0];
-      if (first === "git") {
-        if (!anvilAvailable()) return ALLOW;
-        const sub = words[1];
-        if (sub === "status") return deny("Use `mcp__anvil-emacs-eval__git-status` — structured plist with ahead/behind counts and bucketed paths.");
-        if (sub === "log") return deny("Use `mcp__anvil-emacs-eval__git-log` — returns hash/date/author/subject plists.");
-        if (sub === "diff") return deny("Use `mcp__anvil-emacs-eval__git-diff-names` (paths) or `git-diff-stats` (file/insert/delete counts).");
-        if (sub === "rev-parse") return deny("Use `mcp__anvil-emacs-eval__git-head-sha` or `git-repo-root`.");
-        if (sub === "branch" && words.slice(2).join("") === "") {
-          return deny("Use `mcp__anvil-emacs-eval__git-branch-current` — returns the current branch name.");
-        }
-        if (sub === "worktree" && words[2] === "list") {
-          return deny("Use `mcp__anvil-emacs-eval__git-worktree-list` — structured plists.");
-        }
-      } else if (first === "curl") {
-        if (!anvilAvailable()) return ALLOW;
-        let hasUrl = false, isHead = false, unsupported = false;
-        for (const tok of words.slice(1)) {
-          if (/^https?:\/\//.test(tok)) hasUrl = true;
-          else if (tok === "-I" || tok === "--head") isHead = true;
-          else if (
-            tok === "-X" || tok === "--request" || tok === "-d" || tok.startsWith("--data") ||
-            tok === "-F" || tok === "--form" || tok === "-T" || tok === "--upload-file" ||
-            tok === "-o" || tok === "--output" || tok === "-O" || tok === "--remote-name" ||
-            tok === "-H" || tok === "--header" || tok === "-u" || tok === "--user"
-          ) unsupported = true;
-        }
-        if (!unsupported && hasUrl) {
-          return deny(isHead
-            ? "Use `mcp__anvil-emacs-eval__http-head` for a HEAD request."
-            : "Use `mcp__anvil-emacs-eval__http-fetch`.");
-        }
-      }
-    }
-  } else {
-    const path = input.file_path ?? "";
-    if (path.endsWith(".org")) {
-      if (!anvilAvailable()) return ALLOW;
-      return deny("Use `mcp__anvil-emacs-eval__org-read-outline` (structure) or `org-read-headline` / `org-read-by-id` (subtree). 10–20× cheaper than full Read on large org files.");
-    }
-  }
-  return ALLOW;
-}
+type Guard = (command: string, parsed: Parsed) => Decision;
+// The `powershell` tool gets only the safety guards. Its `ls` and `find` are PowerShell commands, so no modern-CLI rewrite or deny.
+const SAFETY_GUARDS: Guard[] = [blockGitDestructive, blockEnvDump];
+const GUARDS = new Map<string, Guard[]>([
+  ["bash", [...SAFETY_GUARDS, ghJson, enforceModernCli]],
+  ["powershell", SAFETY_GUARDS],
+]);
 
-function guardBash(command: string): Decision {
+function guardCommand(command: string, guards: Guard[]): Decision {
   let rewritten: string | undefined;
   let parsed = readCommand(command);
-  for (const g of [blockGitDestructive, blockEnvDump, ghJson, enforceModernCli]) {
+  for (const g of guards) {
     const result = g(rewritten ?? command, parsed);
     if (result.blocked) return result;
     if (result.rewriteCommand) {
@@ -326,24 +243,17 @@ function guardBash(command: string): Decision {
       parsed = readCommand(rewritten);
     }
   }
-  const result = redirectToAnvil("Bash", { command: rewritten ?? command }, parsed);
-  if (result.blocked) return result;
-  if (rewritten) return { blocked: false, rewriteCommand: rewritten };
-  return ALLOW;
+  return rewritten ? { blocked: false, rewriteCommand: rewritten } : ALLOW;
 }
 
 export default function (pi) {
   pi.on("tool_call", async (event) => {
     try {
-      await refreshAnvilCache();
-      if (event.toolName === "bash" || event.toolName === "powershell") {
-        const result = guardBash(event.input.command);
+      const guards = GUARDS.get(event.toolName);
+      if (guards) {
+        const result = guardCommand(event.input.command, guards);
         if (result.blocked) return { block: true, reason: result.reason };
         if (result.rewriteCommand) event.input.command = result.rewriteCommand;
-      }
-      if (event.toolName === "read") {
-        const result = redirectToAnvil("Read", { file_path: event.input.path });
-        if (result.blocked) return { block: true, reason: result.reason };
       }
     } catch {
       return { block: true, reason: "guard failed. Refusing to run the command." };
