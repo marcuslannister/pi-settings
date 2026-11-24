@@ -1,6 +1,7 @@
 // PreToolUse Bash/Read guards. In-process — no bash spawn. Fail closed.
-import { existsSync, readFileSync } from "node:fs";
+import { accessSync, constants, existsSync, readFileSync, statSync } from "node:fs";
 import { createConnection } from "node:net";
+import { delimiter, join } from "node:path";
 
 export type Decision = { blocked: boolean; reason?: string; rewriteCommand?: string };
 type Parsed = { segments: string[]; separators: string[] };
@@ -17,6 +18,35 @@ let anvilCache: { value: boolean; at: number } | null = null;
 
 export function setAnvilAvailable(value: boolean | undefined) {
   anvilOverride = value;
+}
+
+let toolsOverride: Set<string> | undefined;
+const toolCache = new Map<string, boolean>();
+
+// Tests pass the installed tools; undefined goes back to the PATH lookup.
+export function setInstalledTools(tools: string[] | undefined) {
+  toolsOverride = tools && new Set(tools);
+}
+
+// Like `command -v`: a modern tool that is not installed gets no rewrite and no deny, so the classic command runs.
+// shortcut: the PATH lookup is cached for the process lifetime; a tool installed later needs a Pi restart.
+function have(tool: string): boolean {
+  if (toolsOverride) return toolsOverride.has(tool);
+  let found = toolCache.get(tool);
+  if (found === undefined) {
+    const exts = process.platform === "win32" ? ["", ...(process.env.PATHEXT ?? ".EXE;.CMD;.BAT").split(";")] : [""];
+    const runnable = (p: string) => {
+      try {
+        accessSync(p, constants.X_OK);
+        return statSync(p).isFile();
+      } catch {
+        return false;
+      }
+    };
+    found = (process.env.PATH ?? "").split(delimiter).some((dir) => dir && exts.some((e) => runnable(join(dir, tool + e))));
+    toolCache.set(tool, found);
+  }
+  return found;
 }
 
 function anvilAvailable(): boolean {
@@ -64,7 +94,7 @@ async function refreshAnvilCache() {
 }
 
 function unwrapShell(c: string): string {
-  const re = /(^|\s)([^\s]*\/)?((ba|z|k|da)?sh)((\s+-[A-Za-z]+)*)\s+("[^"]*"|'[^']*')/;
+  const re = /(^|\s)([^\s]*[\\/])?((ba|z|k|da)?sh|pwsh|powershell)(?:\.exe)?((\s+-[A-Za-z]+)*)\s+("[^"]*"|'[^']*')/;
   for (;;) {
     const m = c.match(re);
     if (!m) break;
@@ -103,7 +133,7 @@ function normalizeSegment(s: string): string {
   const sp = trimmed.search(/\s/);
   const first = sp === -1 ? trimmed : trimmed.slice(0, sp);
   const rest = sp === -1 ? "" : trimmed.slice(sp).trim();
-  const cmd = first.replace(/^.*\//, "");
+  const cmd = first.replace(/^.*[\\/]/, "").replace(/\.exe$/i, "");
   return rest ? `${cmd} ${rest}` : cmd;
 }
 
@@ -219,16 +249,16 @@ export function enforceModernCli(command: string, parsed: Parsed = readCommand(c
   if (!command) return ALLOW;
   const findRe = /^find\s+([^\s;|&]+)\s+-name\s+([^\s;|&]+)$/;
   const sedRe = /^sed\s+-i\s+'?s\/([^/\s]+)\/([^/\s]+)\/'?\s+([^\s;|&]+)$/;
-  let m = command.match(findRe);
+  let m = have("fd") ? command.match(findRe) : null;
   if (m) return { blocked: false, rewriteCommand: `fd --glob ${m[2]} ${m[1]}` };
-  m = command.match(sedRe);
+  m = have("sd") ? command.match(sedRe) : null;
   if (m) return { blocked: false, rewriteCommand: `sd '${m[1]}' '${m[2]}' ${m[3]}` };
 
   for (let i = 0; i < parsed.segments.length; i++) {
     if (parsed.separators[i] === "|" || parsed.separators[i] === "|&") continue;
     const first = parsed.segments[i].split(/\s+/)[0];
-    if (first === "grep") return deny('Use rg instead of grep. Example: rg -n "pattern" path');
-    if (first === "ls") return deny("Use eza instead of ls. Example: eza -la --git");
+    if (first === "grep" && have("rg")) return deny('Use rg instead of grep. Example: rg -n "pattern" path');
+    if (first === "ls" && have("eza")) return deny("Use eza instead of ls. Example: eza -la --git");
   }
   return ALLOW;
 }
@@ -306,7 +336,7 @@ export default function (pi) {
   pi.on("tool_call", async (event) => {
     try {
       await refreshAnvilCache();
-      if (event.toolName === "bash") {
+      if (event.toolName === "bash" || event.toolName === "powershell") {
         const result = guardBash(event.input.command);
         if (result.blocked) return { block: true, reason: result.reason };
         if (result.rewriteCommand) event.input.command = result.rewriteCommand;

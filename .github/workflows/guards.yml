@@ -1,0 +1,29 @@
+# Guard self-checks on the three systems Pi runs on. Node 24 runs the .ts files
+# directly. On Windows the job uses the default PowerShell, as Pi does.
+name: Guards
+
+on:
+  push:
+    branches:
+      - main
+  pull_request:
+
+permissions:
+  contents: read
+
+jobs:
+  test-guards:
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [macos-latest, ubuntu-latest, windows-latest]
+    runs-on: ${{ matrix.os }}
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@v7
+      - uses: actions/setup-node@v7
+        with:
+          node-version: 24
+      - run: node --version
+      - run: node agent/extensions/claude-hooks-guard/test.ts
+      - run: node agent/extensions/context-handoff/test.ts

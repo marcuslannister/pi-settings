@@ -6,16 +6,22 @@ import install, {
   ghJson,
   redirectToAnvil,
   setAnvilAvailable,
+  setInstalledTools,
   type Decision,
 } from "./index.ts";
+import { mkdtempSync, rmSync, writeFileSync } from "node:fs";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
 
 let fail = 0;
+let total = 0;
 
 function verdict(d: Decision): "allow" | "deny" {
   return d.blocked ? "deny" : "allow";
 }
 
 function check(fn: (c: string) => Decision, expected: "allow" | "deny", command: string) {
+  total++;
   const actual = verdict(fn(command));
   if (actual !== expected) {
     console.log(`FAIL: expected ${expected}, got ${actual} for: ${command}`);
@@ -24,6 +30,7 @@ function check(fn: (c: string) => Decision, expected: "allow" | "deny", command:
 }
 
 function decision(expected: "allow" | "deny", command: string) {
+  total++;
   const d = enforceModernCli(command);
   const actual = verdict(d);
   if (actual !== expected) {
@@ -33,6 +40,7 @@ function decision(expected: "allow" | "deny", command: string) {
 }
 
 function rewrite(expected: string, command: string) {
+  total++;
   const actual = enforceModernCli(command).rewriteCommand ?? "";
   if (actual !== expected) {
     console.log(`FAIL enforce-modern-cli: expected rewrite ${expected}, got ${actual} for: ${command}`);
@@ -41,12 +49,16 @@ function rewrite(expected: string, command: string) {
 }
 
 function redirect(expected: "allow" | "deny", tool: "Bash" | "Read", input: { command?: string; file_path?: string }) {
+  total++;
   const actual = verdict(redirectToAnvil(tool, input));
   if (actual !== expected) {
     console.log(`FAIL redirect-to-anvil: expected ${expected}, got ${actual} for: ${tool} ${JSON.stringify(input)}`);
     fail++;
   }
 }
+
+// The cases below do not depend on this machine: pretend all four modern tools are installed.
+setInstalledTools(["rg", "eza", "fd", "sd"]);
 
 const git = (e: "allow" | "deny", c: string) => check(blockGitDestructive, e, c);
 const env = (e: "allow" | "deny", c: string) => check(blockEnvDump, e, c);
@@ -90,6 +102,14 @@ git("deny", "command git clean -fd");
 git("deny", "exec git clean -fd");
 git("deny", "env -u GIT_DIR git clean -fd");
 git("allow", "env -u GIT_DIR git status");
+git("deny", "git.exe reset --hard HEAD");
+git("deny", "C:\\Git\\cmd\\git.exe clean -fd");
+git("deny", "bash.exe -c 'git clean -fd'");
+git("deny", "C:\\Program Files\\Git\\bin\\sh.exe -c 'git reset --hard'");
+git("allow", "git.exe status -sb");
+git("deny", 'pwsh -NoProfile -Command "git reset --hard HEAD"');
+git("deny", 'powershell.exe -c "git clean -fd"');
+git("allow", 'pwsh -c "git status -sb"');
 
 env("deny", "env");
 env("deny", "env | rg TOKEN");
@@ -120,6 +140,8 @@ env("allow", "export FOO=1");
 env("allow", "set -x");
 env("deny", "if echo $GITHUB_TOKEN; then :; fi");
 env("deny", 'echo "${GH_TOKEN}"');
+env("deny", "env.exe");
+env("deny", "C:\\Git\\usr\\bin\\env.exe");
 
 decision("deny", "grep -r foo .");
 decision("deny", "ls");
@@ -192,16 +214,50 @@ redirect("allow", "Bash", { command: "FOO=1 sed -i s/a/b/ f.txt" });
 redirect("allow", "Bash", { command: "/usr/bin/sed -i s/a/b/ f.txt" });
 setAnvilAvailable(undefined);
 
+// A modern tool that is not installed gets no rewrite and no deny: the classic command runs.
+setInstalledTools([]);
+decision("allow", "grep -r foo .");
+decision("allow", "ls");
+decision("allow", "bash -c 'ls -la'");
+rewrite("", "find . -name x");
+rewrite("", "sed -i s/a/b/ f");
+// Each tool gates only its own rule.
+setInstalledTools(["fd"]);
+rewrite("fd --glob x .", "find . -name x");
+rewrite("", "sed -i s/a/b/ f");
+decision("allow", "grep -r foo .");
+setInstalledTools(["sd"]);
+rewrite("sd 'a' 'b' f", "sed -i s/a/b/ f");
+rewrite("", "find . -name x");
+setInstalledTools(["rg"]);
+decision("deny", "grep -r foo .");
+decision("allow", "ls");
+setInstalledTools(["eza"]);
+decision("deny", "ls");
+decision("allow", "grep -r foo .");
+
+// PATH lookup, with no override: a stub `sd` in a temp dir is found, `fd` is not.
+const bin = mkdtempSync(join(tmpdir(), "guard-test-"));
+writeFileSync(join(bin, process.platform === "win32" ? "sd.cmd" : "sd"), "", { mode: 0o755 });
+const oldPath = process.env.PATH;
+process.env.PATH = bin;
+setInstalledTools(undefined);
+rewrite("sd 'a' 'b' f", "sed -i s/a/b/ f");
+rewrite("", "find . -name x");
+process.env.PATH = oldPath;
+rmSync(bin, { recursive: true, force: true });
+
 let handler: (event: unknown) => Promise<{ block?: boolean } | void>;
 install({ on(_n: string, fn: typeof handler) { handler = fn; } });
 const closed = await handler({
   toolName: "bash",
   input: { get command() { throw new Error("boom"); } },
 });
+total++;
 if (!closed?.block) {
   console.log("FAIL fail-closed: expected block on throw");
   fail++;
 }
 
-if (fail === 0) console.log("all hook checks passed");
-else process.exit(1);
+console.log(`claude-hooks-guard: ${total - fail} passed, ${fail} failed`);
+if (fail) process.exit(1);
