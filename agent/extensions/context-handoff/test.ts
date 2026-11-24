@@ -2,7 +2,9 @@
 import install, { warning } from "./index.ts";
 
 let fail = 0;
+let total = 0;
 function check(name: string, ok: boolean) {
+  total++;
   if (!ok) {
     console.log(`FAIL context-handoff: ${name}`);
     fail++;
@@ -70,5 +72,5 @@ check("once per session", h(ev(), ctx([out.entries[1]])) === undefined);
 check("not on an aborted turn", h(ev("aborted"), ctx([])) === undefined);
 check("error does nothing", h(ev(), { getContextUsage: () => { throw new Error("boom"); } }) === undefined);
 
-if (fail === 0) console.log("all context-handoff checks passed");
-else process.exit(1);
+console.log(`context-handoff: ${total - fail} passed, ${fail} failed`);
+if (fail) process.exit(1);

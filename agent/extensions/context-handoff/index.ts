@@ -27,7 +27,7 @@ export function warning(
   if (!(Number.isFinite(limit) && limit > 0) || usage.tokens < limit) return;
   const fill = Math.round((usage.tokens / usage.contextWindow) * 100);
   const threshold = Math.round((limit / usage.contextWindow) * 100);
-  return `Context fill is ${fill}% (handoff threshold ${threshold}%). Read ${join(homedir(), "Projects/agent-scripts/global/rules/handoff.md")} and hand off now.`;
+  return `Context fill is ${fill}% (handoff threshold ${threshold}%). Read ${join(homedir(), "Projects/agent-scripts/global/rules/handoff.md").replaceAll("\\", "/")} and hand off now.`;
 }
 
 // Warn once per session, in a herdr pane, before auto compact. Never blocks a turn: on error, do nothing.

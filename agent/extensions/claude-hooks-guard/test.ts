@@ -4,18 +4,22 @@ import install, {
   blockGitDestructive,
   enforceModernCli,
   ghJson,
-  redirectToAnvil,
-  setAnvilAvailable,
+  setInstalledTools,
   type Decision,
 } from "./index.ts";
+import { mkdtempSync, rmSync, writeFileSync } from "node:fs";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
 
 let fail = 0;
+let total = 0;
 
 function verdict(d: Decision): "allow" | "deny" {
   return d.blocked ? "deny" : "allow";
 }
 
 function check(fn: (c: string) => Decision, expected: "allow" | "deny", command: string) {
+  total++;
   const actual = verdict(fn(command));
   if (actual !== expected) {
     console.log(`FAIL: expected ${expected}, got ${actual} for: ${command}`);
@@ -24,6 +28,7 @@ function check(fn: (c: string) => Decision, expected: "allow" | "deny", command:
 }
 
 function decision(expected: "allow" | "deny", command: string) {
+  total++;
   const d = enforceModernCli(command);
   const actual = verdict(d);
   if (actual !== expected) {
@@ -33,6 +38,7 @@ function decision(expected: "allow" | "deny", command: string) {
 }
 
 function rewrite(expected: string, command: string) {
+  total++;
   const actual = enforceModernCli(command).rewriteCommand ?? "";
   if (actual !== expected) {
     console.log(`FAIL enforce-modern-cli: expected rewrite ${expected}, got ${actual} for: ${command}`);
@@ -40,13 +46,8 @@ function rewrite(expected: string, command: string) {
   }
 }
 
-function redirect(expected: "allow" | "deny", tool: "Bash" | "Read", input: { command?: string; file_path?: string }) {
-  const actual = verdict(redirectToAnvil(tool, input));
-  if (actual !== expected) {
-    console.log(`FAIL redirect-to-anvil: expected ${expected}, got ${actual} for: ${tool} ${JSON.stringify(input)}`);
-    fail++;
-  }
-}
+// The cases below do not depend on this machine: pretend all four modern tools are installed.
+setInstalledTools(["rg", "eza", "fd", "sd"]);
 
 const git = (e: "allow" | "deny", c: string) => check(blockGitDestructive, e, c);
 const env = (e: "allow" | "deny", c: string) => check(blockEnvDump, e, c);
@@ -90,6 +91,14 @@ git("deny", "command git clean -fd");
 git("deny", "exec git clean -fd");
 git("deny", "env -u GIT_DIR git clean -fd");
 git("allow", "env -u GIT_DIR git status");
+git("deny", "git.exe reset --hard HEAD");
+git("deny", "C:\\Git\\cmd\\git.exe clean -fd");
+git("deny", "bash.exe -c 'git clean -fd'");
+git("deny", "C:\\Program Files\\Git\\bin\\sh.exe -c 'git reset --hard'");
+git("allow", "git.exe status -sb");
+git("deny", 'pwsh -NoProfile -Command "git reset --hard HEAD"');
+git("deny", 'powershell.exe -c "git clean -fd"');
+git("allow", 'pwsh -c "git status -sb"');
 
 env("deny", "env");
 env("deny", "env | rg TOKEN");
@@ -120,6 +129,8 @@ env("allow", "export FOO=1");
 env("allow", "set -x");
 env("deny", "if echo $GITHUB_TOKEN; then :; fi");
 env("deny", 'echo "${GH_TOKEN}"');
+env("deny", "env.exe");
+env("deny", "C:\\Git\\usr\\bin\\env.exe");
 
 decision("deny", "grep -r foo .");
 decision("deny", "ls");
@@ -175,22 +186,56 @@ gh("deny", "gh variable list");
 gh("deny", "gh secret list");
 gh("allow", "gh label list --json name");
 
-setAnvilAvailable(true);
-redirect("deny", "Bash", { command: "git status" });
-redirect("allow", "Bash", { command: "git push origin main" });
-redirect("deny", "Bash", { command: "curl https://example.com" });
-redirect("deny", "Bash", { command: "curl -I https://example.com" });
-redirect("allow", "Bash", { command: "curl -X POST https://example.com -d foo" });
-redirect("allow", "Bash", { command: "curl https://example.com --head -o out.html" });
-redirect("allow", "Bash", { command: "curl https://example.com -X POST -d foo" });
-redirect("allow", "Bash", { command: "sed -i s/a/b/ f.txt" });
-redirect("allow", "Bash", { command: "sed -n 1,5p f.txt" });
-redirect("deny", "Read", { file_path: "./x.org" });
-redirect("allow", "Read", { file_path: "./x.md" });
-redirect("allow", "Bash", { command: "echo ok; sed -i s/a/b/ f.txt" });
-redirect("allow", "Bash", { command: "FOO=1 sed -i s/a/b/ f.txt" });
-redirect("allow", "Bash", { command: "/usr/bin/sed -i s/a/b/ f.txt" });
-setAnvilAvailable(undefined);
+// Command names match without regard to case, and with a `.exe` suffix or a directory (`/` or `\`) in front.
+git("deny", "GIT clean -fd");
+git("deny", "Git.EXE reset --hard HEAD");
+git("deny", "C:\\Git\\cmd\\GIT.EXE clean -fd");
+git("deny", "/usr/bin/env git clean -fd");
+git("deny", "C:\\Git\\usr\\bin\\ENV.EXE git clean -fd");
+git("deny", "COMMAND git clean -fd");
+git("deny", "BASH.EXE -c 'git clean -fd'");
+git("deny", 'Pwsh -NoProfile -Command "git reset --hard HEAD"');
+git("deny", "if GIT clean -fd; then :; fi");
+git("allow", "GIT status -sb");
+env("deny", "ENV");
+env("deny", "C:\\Git\\usr\\bin\\PRINTENV.EXE");
+gh("deny", "GH.EXE pr view 1");
+gh("allow", "GH.EXE pr view 1 --json title");
+decision("deny", "LS");
+decision("deny", "BASH -c 'ls -la'");
+
+// A modern tool that is not installed gets no rewrite and no deny: the classic command runs.
+setInstalledTools([]);
+decision("allow", "grep -r foo .");
+decision("allow", "ls");
+decision("allow", "bash -c 'ls -la'");
+rewrite("", "find . -name x");
+rewrite("", "sed -i s/a/b/ f");
+// Each tool gates only its own rule.
+setInstalledTools(["fd"]);
+rewrite("fd --glob x .", "find . -name x");
+rewrite("", "sed -i s/a/b/ f");
+decision("allow", "grep -r foo .");
+setInstalledTools(["sd"]);
+rewrite("sd 'a' 'b' f", "sed -i s/a/b/ f");
+rewrite("", "find . -name x");
+setInstalledTools(["rg"]);
+decision("deny", "grep -r foo .");
+decision("allow", "ls");
+setInstalledTools(["eza"]);
+decision("deny", "ls");
+decision("allow", "grep -r foo .");
+
+// PATH lookup, with no override: a stub `sd` in a temp dir is found, `fd` is not.
+const bin = mkdtempSync(join(tmpdir(), "guard-test-"));
+writeFileSync(join(bin, process.platform === "win32" ? "sd.cmd" : "sd"), "", { mode: 0o755 });
+const oldPath = process.env.PATH;
+process.env.PATH = bin;
+setInstalledTools(undefined);
+rewrite("sd 'a' 'b' f", "sed -i s/a/b/ f");
+rewrite("", "find . -name x");
+process.env.PATH = oldPath;
+rmSync(bin, { recursive: true, force: true });
 
 let handler: (event: unknown) => Promise<{ block?: boolean } | void>;
 install({ on(_n: string, fn: typeof handler) { handler = fn; } });
@@ -198,10 +243,69 @@ const closed = await handler({
   toolName: "bash",
   input: { get command() { throw new Error("boom"); } },
 });
+total++;
 if (!closed?.block) {
   console.log("FAIL fail-closed: expected block on throw");
   fail++;
 }
 
-if (fail === 0) console.log("all hook checks passed");
-else process.exit(1);
+// The handler Pi calls: the decision and the final input. Pretend all four modern tools are installed.
+setInstalledTools(["rg", "eza", "fd", "sd"]);
+async function entry(expected: "allow" | "deny", toolName: string, input: Record<string, string>, finalCommand?: string) {
+  total++;
+  const event = { toolName, input: { ...input } };
+  const actual = (await handler(event))?.block ? "deny" : "allow";
+  const want = JSON.stringify({ ...input, ...(finalCommand === undefined ? {} : { command: finalCommand }) });
+  if (actual !== expected || (expected === "allow" && JSON.stringify(event.input) !== want)) {
+    console.log(`FAIL handler: expected ${expected} with ${want}, got ${actual} with ${JSON.stringify(event.input)} for ${toolName}`);
+    fail++;
+  }
+}
+const run = (e: "allow" | "deny", tool: string, command: string, finalCommand?: string) => entry(e, tool, { command }, finalCommand);
+
+// bash tool: Windows names, quoted executable paths, wrappers.
+await run("deny", "bash", "GIT reset --hard HEAD");
+await run("deny", "bash", "Git.EXE reset --hard HEAD");
+await run("deny", "bash", "/usr/bin/env git clean -fd");
+await run("deny", "bash", "C:\\Git\\usr\\bin\\ENV.EXE git clean -fd");
+await run("deny", "bash", "BASH.EXE -c 'git clean -fd'");
+await run("deny", "bash", 'Pwsh -NoProfile -Command "git reset --hard HEAD"');
+await run("deny", "bash", '"C:\\Program Files\\PowerShell\\7\\pwsh.exe" -NoProfile -Command \'git reset --hard HEAD\'');
+await run("deny", "bash", '"C:\\Program Files\\Git\\bin\\bash.exe" -c "git clean -fd"');
+await run("deny", "bash", "'C:\\Program Files\\Git\\bin\\BASH.EXE' -c 'git clean -fd'");
+await run("deny", "bash", '"C:\\Program Files\\Git\\cmd\\git.exe" reset --hard HEAD');
+await run("deny", "bash", '& "C:\\Program Files\\Git\\cmd\\git.exe" reset --hard HEAD');
+await run("deny", "bash", 'if "C:\\Program Files\\Git\\cmd\\git.exe" clean -fd; then :; fi');
+await run("deny", "bash", "GH pr view 12");
+await run("deny", "bash", "BASH -c 'ls -la'");
+await run("deny", "bash", "ENV");
+await run("allow", "bash", '"C:\\Program Files\\Git\\cmd\\git.exe" status -sb');
+await run("allow", "bash", '"C:\\Program Files\\PowerShell\\7\\pwsh.exe" -NoProfile -Command \'git status -sb\'');
+await run("allow", "bash", "GH.EXE pr view 12 --json title");
+await run("allow", "bash", "echo hello");
+// bash tool: the modern-CLI rewrite changes the input.
+await run("allow", "bash", "find . -name x", "fd --glob x .");
+await run("allow", "bash", "sed -i s/a/b/ f", "sd 'a' 'b' f");
+
+// powershell tool: only the safety guards. No modern-CLI deny or rewrite, and the input stays as typed.
+await run("deny", "powershell", "git reset --hard HEAD");
+await run("deny", "powershell", "GIT.EXE clean -fd");
+await run("deny", "powershell", '& "C:\\Program Files\\Git\\cmd\\git.exe" reset --hard HEAD');
+await run("deny", "powershell", "echo $GITHUB_TOKEN");
+await run("allow", "powershell", "ls -LiteralPath .");
+await run("allow", "powershell", "find . -name x");
+await run("allow", "powershell", "sed -i s/a/b/ f");
+await run("allow", "powershell", "grep foo f.txt");
+await run("allow", "powershell", "gh pr view 12"); // the gh --json rule is a cache policy for bash only
+await run("allow", "powershell", "git status -sb");
+
+// Other tools pass untouched, and Pi never redirects to Anvil, whether or not an Emacs server runs here.
+await run("allow", "read", "git reset --hard HEAD");
+await run("allow", "toString", "git reset --hard HEAD");
+await entry("allow", "read", { path: "./notes.org" });
+await run("allow", "bash", "git status");
+await run("allow", "bash", "git log -1");
+await run("allow", "bash", "curl https://example.com");
+
+console.log(`claude-hooks-guard: ${total - fail} passed, ${fail} failed`);
+if (fail) process.exit(1);
