@@ -98,8 +98,54 @@ function normalizeSegment(s: string): string {
   return rest ? `${first} ${rest}` : first;
 }
 
+// Removes the body and end word of each heredoc: its lines are data, not commands. The line that opens it stays.
+// A body stays when its lines can still run or print: a shell reads it (`sh`, `bash`, `ssh`, `source`, or `eval` on
+// the opening line), or it is unquoted (`<<EOF`) and expands, so a line with `$` or a backtick stays.
+// The scan skips quoted text, comments, and `<<<`. Like bash, it treats a heredoc with no end word as running to the end.
+// shortcut: a heredoc inside `bash -c '...'` keeps its body (it may still block), and `$((a<<b))` with a letter
+// operand reads as a heredoc; upgrade by calling this again after unwrapShell, and by tracking `$((`.
+function stripHeredocs(c: string): string {
+  if (!c.includes("<<")) return c;
+  const open = /^<<(-?)\s*(['"\\]?)([A-Za-z_][^\s;&|()<>'"\\`$]*)/;
+  const shell = /(^|[^\w.-])(ssh|(?:ba|z|k|da)?sh|source|eval)([^\w-]|$)/i;
+  const out: string[] = [];
+  const pend: { mode: "drop" | "keep" | "expand"; end: string }[] = [];
+  let q = "";
+  for (const line of c.split("\n")) {
+    const body = pend[0];
+    if (body) {
+      // A CRLF command ends the heredoc at `EOF\r`. `<<-` strips tabs; stripping any blank only errs toward checking more.
+      if (line.replace(/\r$/, "").trimStart() === body.end) pend.shift();
+      if (body.mode === "keep" || (body.mode === "expand" && /[$`]/.test(line))) out.push(line);
+      continue;
+    }
+    out.push(line);
+    for (let i = 0; i < line.length; i++) {
+      const ch = line[i];
+      if (q === "'") {
+        if (ch === "'") q = "";
+      } else if (ch === "\\") i++;
+      else if (q) {
+        if (ch === '"') q = "";
+      } else if (ch === "'" || ch === '"') q = ch;
+      else if (ch === "#" && (i === 0 || /\s/.test(line[i - 1]))) break;
+      else if (ch === "<") {
+        const rest = line.slice(i);
+        let m: RegExpMatchArray | null;
+        if (rest.startsWith("<<<")) i += 2;
+        else if ((m = rest.match(open))) {
+          i += m[0].length - 1;
+          if ((m[2] === "'" || m[2] === '"') && line[i + 1] === m[2]) i++;
+          pend.push({ mode: shell.test(line) ? "keep" : m[2] ? "drop" : "expand", end: m[3] });
+        } else if (rest.startsWith("<<")) i++;
+      }
+    }
+  }
+  return out.join("\n");
+}
+
 function readCommand(command: string): Parsed {
-  const c = stripQuotes(unwrapShell(command));
+  const c = stripQuotes(unwrapShell(stripHeredocs(command)));
   const segments: string[] = [];
   const separators: string[] = [];
   let seg = "";
