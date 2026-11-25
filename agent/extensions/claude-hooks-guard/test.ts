@@ -186,6 +186,85 @@ gh("deny", "gh variable list");
 gh("deny", "gh secret list");
 gh("allow", "gh label list --json name");
 
+// A heredoc body is data: a line that starts with `set`, `env`, `git reset --hard`, or `grep` is not a
+// command. This holds for every way to write the opener, in every guard that parses with readCommand.
+const hdBody = "set\nenv\nexport\nprintenv\ndeclare -x\ngit reset --hard\ngit status\ngh pr view 1\ngrep -r x .";
+for (const hd of ["<<'EOF'", '<<"EOF"', "<<\\EOF", "<<EOF", "<< EOF"]) {
+  const hdCmd = `cat >> /tmp/x.md ${hd}\n${hdBody}\nEOF`;
+  env("allow", hdCmd);
+  git("allow", hdCmd);
+  gh("allow", hdCmd);
+  decision("allow", hdCmd);
+  env("deny", `${hdCmd}\nenv`); // a command after the end word is still read
+  git("deny", `${hdCmd}\ngit reset --hard`);
+}
+env("allow", "cat > /tmp/i.sh <<-EOF\n\tset\n\tenv\n\tEOF");
+env("deny", "cat > /tmp/i.sh <<-EOF\n\tset\n\tEOF\nenv");
+// Windows: a CRLF command ends the heredoc at `EOF\r`.
+git("allow", "cat > /tmp/x <<EOF\r\ngit reset --hard\r\nEOF\r\n");
+git("deny", "cat > /tmp/x <<EOF\r\nx\r\nEOF\r\ngit reset --hard\r\n");
+// Two heredocs on one line: both bodies are data.
+env("allow", "cat <<'A' <<'B'\nset\nA\nenv\nB");
+env("deny", "cat <<'A' <<'B'\nset\nA\nenv\nB\nenv");
+// The command line that opens the heredoc is still checked.
+git("deny", "git reset --hard <<'EOF'\nx\nEOF");
+env("deny", "env -0 && cat <<'EOF'\nx\nEOF");
+env("deny", "cat <<EOF $GITHUB_TOKEN\nx\nEOF");
+// An unquoted body expands: `$(...)`, a backtick, and `$VAR` still run or print.
+git("deny", "cat <<EOF\n$(git reset --hard)\nEOF");
+git("deny", "cat <<EOF\n`git reset --hard`\nEOF");
+env("deny", "cat <<EOF\necho $GITHUB_TOKEN\nEOF");
+env("allow", "cat <<'EOF'\necho $GITHUB_TOKEN\nEOF");
+// A shell reads the body of its heredoc as commands, so those lines stay checked.
+git("deny", "ssh h sh -s <<'EOF'\ngit reset --hard\nEOF");
+git("deny", "ssh h <<'EOF'\ngit reset --hard\nEOF");
+git("deny", "cat <<'EOF' | bash\ngit reset --hard\nEOF");
+env("deny", "bash <<EOF\nenv\nEOF");
+// `<<` that is not a heredoc opener hides nothing: here-string, quoted text, comment, arithmetic.
+env("allow", "cat <<< set");
+git("deny", "cat <<< x\ngit reset --hard");
+git("deny", 'git commit -m "mention <<EOF here"\ngit reset --hard');
+git("deny", 'git commit -m "title\n\nmention <<EOF here"\ngit reset --hard');
+git("deny", "echo $((1<<3))\ngit reset --hard");
+git("deny", "# use <<EOF here\ngit reset --hard");
+// `\` and a newline join the lines first: the shell word may sit on a continuation line.
+git("deny", "ssh -o X=1 \\\n  h <<'EOF'\ngit reset --hard\nEOF");
+git("deny", "cat <<'EOF' \\\n  | ssh h bash -s\ngit reset --hard\nEOF");
+env("allow", "cat >> notes \\\n  <<'EOF'\nset\nenv\nEOF");
+env("deny", "cat >> notes \\\n  <<'EOF'\nset\nEOF\nenv");
+git("deny", "git push \\\n  --force <<'EOF'\nx\nEOF");
+// Write, then run: a body that a later `bash`, `sh`, `.`, `source`, or `./file` runs is a script.
+git("deny", "cat > /tmp/fix.sh <<'EOF'\ngit reset --hard origin/main\nEOF\nbash /tmp/fix.sh");
+git("deny", "cat > fix.sh <<'EOF' && chmod +x fix.sh && ./fix.sh\ngit reset --hard\nEOF");
+git("deny", "cat > /tmp/fix.sh <<'EOF'\ngit reset --hard\nEOF\n/tmp/fix.sh");
+env("deny", "cat > x <<'EOF'\nenv\nEOF\nsh x");
+env("deny", "cat > x <<'EOF'\nenv\nEOF\n. ./x");
+env("deny", "cat > x <<'EOF'\nenv\nEOF\nsource x");
+// A word in the body, a `.` argument, or a file name that nothing runs is not a run.
+env("allow", "cat >> notes <<'EOF'\nrun bash hooks/test-hooks.sh\nset\nenv\nEOF");
+env("allow", "git add . && cat >> notes <<'EOF'\nset\nenv\nEOF");
+env("allow", "cat > ./fix.sh <<'EOF'\nset\nenv\nEOF");
+env("allow", "cd /tmp && git commit -F - <<'EOF'\nenv\nEOF");
+// More shells read their stdin: su, sudo -i, sudo -s, a dot command, and any letter case.
+git("deny", "su root <<'EOF'\ngit reset --hard\nEOF");
+git("deny", "sudo -i <<'EOF'\ngit reset --hard\nEOF");
+git("deny", "sudo -s <<'EOF'\ngit reset --hard\nEOF");
+git("deny", ". /dev/stdin <<'EOF'\ngit reset --hard\nEOF");
+git("deny", "SSH h <<'EOF'\ngit reset --hard\nEOF");
+git("deny", "BASH.EXE -s <<'EOF'\ngit reset --hard\nEOF");
+env("deny", "BASH <<EOF\nenv\nEOF");
+env("allow", "sudo -u root tee -a f <<'EOF'\nset\nenv\nEOF");
+// These already held: a shell after sudo or env, `bash -s`, and a pipe into `sudo bash`.
+git("deny", "sudo bash <<'EOF'\ngit reset --hard\nEOF");
+git("deny", "env bash <<'EOF'\ngit reset --hard\nEOF");
+git("deny", "bash -s <<'EOF'\ngit reset --hard\nEOF");
+git("deny", "cat <<'EOF' | sudo bash\ngit reset --hard\nEOF");
+// An end word with quotes inside is the word without them: `E"O"F` ends at `EOF`.
+git("deny", 'cat <<E"O"F\nx\nEOF\ngit reset --hard');
+git("deny", "cat <<'E'OF\nx\nEOF\ngit reset --hard");
+env("allow", 'cat <<E"O"F\nset\nenv\nEOF');
+env("allow", 'cat <<E"O"F\necho $GITHUB_TOKEN\nEOF');
+
 // Command names match without regard to case, and with a `.exe` suffix or a directory (`/` or `\`) in front.
 git("deny", "GIT clean -fd");
 git("deny", "Git.EXE reset --hard HEAD");
