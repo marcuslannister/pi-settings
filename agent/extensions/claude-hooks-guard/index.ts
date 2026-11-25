@@ -98,50 +98,73 @@ function normalizeSegment(s: string): string {
   return rest ? `${first} ${rest}` : first;
 }
 
+// True when the command runs a shell or a script, so a heredoc body may run as commands: a shell word (`sh`, `bash`,
+// `ssh`, `su`, `source`, `eval`), `sudo -i` or `sudo -s`, a `.` command word, or `./file` and `/path/file.sh` in command
+// position. Any letter case. The text is the command without its heredoc bodies, so a word inside a body does not count.
+// A false yes only keeps a body checked.
+const runsScript = (t: string) =>
+  /(^|[^\w.-])(ssh|(?:ba|z|k|da|c|tc)?sh|fish|su|source|eval)([^\w-]|$)/i.test(t) ||
+  /(^|[^\w.-])sudo\s([^;&|]*\s)?-[a-z]*[is](\s|$)/i.test(t) ||
+  /(^|[;&|(`\n])\s*\.\s/.test(t) ||
+  /(^|[;&|(`\n])\s*(\.\/[^\s;&|()<>]+|[~/][^\s;&|()<>]*\.sh)(\s|[;&|()]|$)/i.test(t);
+
 // Removes the body and end word of each heredoc: its lines are data, not commands. The line that opens it stays.
-// A body stays when its lines can still run or print: a shell reads it (`sh`, `bash`, `ssh`, `source`, or `eval` on
-// the opening line), or it is unquoted (`<<EOF`) and expands, so a line with `$` or a backtick stays.
-// The scan skips quoted text, comments, and `<<<`. Like bash, it treats a heredoc with no end word as running to the end.
+// A body stays when its lines can still run or print: the command runs a shell or a script anywhere (see runsScript),
+// so every body stays; or it is unquoted (`<<EOF`) and expands, so a line with `$` or a backtick stays.
+// A `\` that ends a line joins the next line first, as bash does, so the opening line is whole.
+// The end word is the word without its quotes (`E"O"F` ends at `EOF`). The scan skips quoted text, comments, and `<<<`.
+// Like bash, it treats a heredoc with no end word as running to the end.
 // shortcut: a heredoc inside `bash -c '...'` keeps its body (it may still block), and `$((a<<b))` with a letter
 // operand reads as a heredoc; upgrade by calling this again after unwrapShell, and by tracking `$((`.
 function stripHeredocs(c: string): string {
   if (!c.includes("<<")) return c;
-  const open = /^<<(-?)\s*(['"\\]?)([A-Za-z_][^\s;&|()<>'"\\`$]*)/;
-  const shell = /(^|[^\w.-])(ssh|(?:ba|z|k|da)?sh|source|eval)([^\w-]|$)/i;
-  const out: string[] = [];
-  const pend: { mode: "drop" | "keep" | "expand"; end: string }[] = [];
-  let q = "";
-  for (const line of c.split("\n")) {
-    const body = pend[0];
-    if (body) {
-      // A CRLF command ends the heredoc at `EOF\r`. `<<-` strips tabs; stripping any blank only errs toward checking more.
-      if (line.replace(/\r$/, "").trimStart() === body.end) pend.shift();
-      if (body.mode === "keep" || (body.mode === "expand" && /[$`]/.test(line))) out.push(line);
-      continue;
-    }
-    out.push(line);
-    for (let i = 0; i < line.length; i++) {
-      const ch = line[i];
-      if (q === "'") {
-        if (ch === "'") q = "";
-      } else if (ch === "\\") i++;
-      else if (q) {
-        if (ch === '"') q = "";
-      } else if (ch === "'" || ch === '"') q = ch;
-      else if (ch === "#" && (i === 0 || /\s/.test(line[i - 1]))) break;
-      else if (ch === "<") {
-        const rest = line.slice(i);
-        let m: RegExpMatchArray | null;
-        if (rest.startsWith("<<<")) i += 2;
-        else if ((m = rest.match(open))) {
-          i += m[0].length - 1;
-          if ((m[2] === "'" || m[2] === '"') && line[i + 1] === m[2]) i++;
-          pend.push({ mode: shell.test(line) ? "keep" : m[2] ? "drop" : "expand", end: m[3] });
-        } else if (rest.startsWith("<<")) i++;
+  const open = /^<<(-?)\s*((?:[A-Za-z_]|'[^']*'|"[^"]*"|\\.)(?:[^\s;&|()<>'"\\`$]|'[^']*'|"[^"]*"|\\.)*)/;
+  let keepAll = false;
+  for (;;) {
+    const lines = c.split("\n");
+    const out: string[] = [];
+    const outside: string[] = []; // the lines that are not a body
+    const pend: { expand: boolean; end: string }[] = [];
+    let q = "";
+    for (let li = 0; li < lines.length; li++) {
+      let line = lines[li];
+      const body = pend[0];
+      if (body) {
+        // A CRLF command ends the heredoc at `EOF\r`. `<<-` strips tabs; stripping any blank only errs toward checking more.
+        if (line.replace(/\r$/, "").trimStart() === body.end) pend.shift();
+        if (keepAll || (body.expand && /[$`]/.test(line))) out.push(line);
+        continue;
       }
+      for (let i = 0; i < line.length; i++) {
+        const ch = line[i];
+        if (q === "'") {
+          if (ch === "'") q = "";
+        } else if (ch === "\\") {
+          if (i === line.length - 1 && li + 1 < lines.length) {
+            line = line.slice(0, i) + lines[++li];
+            i--;
+          } else i++;
+        } else if (q) {
+          if (ch === '"') q = "";
+        } else if (ch === "'" || ch === '"') q = ch;
+        else if (ch === "#" && (i === 0 || /\s/.test(line[i - 1]))) break;
+        else if (ch === "<") {
+          const rest = line.slice(i);
+          let m: RegExpMatchArray | null;
+          if (rest.startsWith("<<<")) i += 2;
+          else if ((m = rest.match(open))) {
+            i += m[0].length - 1;
+            const end = m[2].replace(/['"\\]/g, "");
+            pend.push({ expand: end === m[2], end });
+          } else if (rest.startsWith("<<")) i++;
+        }
+      }
+      out.push(line);
+      outside.push(line);
     }
+    if (!keepAll && runsScript(outside.join("\n"))) keepAll = true;
+    else return out.join("\n");
   }
-  return out.join("\n");
 }
 
 function readCommand(command: string): Parsed {
